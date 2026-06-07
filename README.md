@@ -14,7 +14,7 @@
 ## Быстрый старт (MCP, ~5 минут)
 
 ```bash
-git clone <repo> tabula-rasa && cd tabula-rasa
+git clone https://github.com/yrschnk/tabula-rasa.git && cd tabula-rasa
 python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
