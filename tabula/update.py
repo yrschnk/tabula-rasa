@@ -108,6 +108,10 @@ def apply_candidate(candidate: FactCandidate, namespace: str,
     op, target_id = resolve_operation(candidate, similar)
 
     # 4. Применение
+    # Гарантируем что концепт зарегистрирован
+    from tabula.store import upsert_concept
+    upsert_concept(candidate.concept, namespace)
+
     if op == "ADD":
         fid = add_fact(candidate, namespace, source_raw_id=source_raw_id)
         _index_embedding(fid, candidate.content, namespace)

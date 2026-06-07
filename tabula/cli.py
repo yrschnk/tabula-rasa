@@ -55,10 +55,11 @@ def ask(
 def sync(namespace: str = typer.Option("personal", "--ns")):
     """Пересобрать граф + markdown wiki из SQLite."""
     from tabula.graph import load_graph
+    from tabula.projection import rebuild_wiki
     G = load_graph(namespace)
     typer.echo(f"🔗 Граф: {G.number_of_nodes()} узлов, {G.number_of_edges()} рёбер.")
-    # Веха 11: projection.rebuild_wiki(namespace)
-    typer.echo("✅ Sync завершён.")
+    rebuild_wiki(namespace)
+    typer.echo("✅ Sync завершён — wiki обновлена.")
 
 
 @app.command()
