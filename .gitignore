@@ -9,17 +9,24 @@ venv/
 
 # Secrets
 .env
+.env.local
 
-# Data (локальные, не коммитим)
-db/*.db
-raw/**/*.json
-wiki/**/*.md
-bench/results/*.json
+# Local data (SQLite, raw turns, wiki projection)
+db/
+raw/
+wiki/
+bench/results/
 bench/datasets/data/
 
 # Models cache (fastembed)
 .fastembed_cache/
 *.onnx
+models/
 
-# OS
+# MCP config с абсолютными путями (генерируется tabula connect)
+.cursor/mcp.json
+
+# Editor / OS
+.idea/
+.vscode/
 .DS_Store

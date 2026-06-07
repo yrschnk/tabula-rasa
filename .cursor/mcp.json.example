@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tabula-rasa": {
+      "command": "/ABS/PATH/tabula-rasa/.venv/bin/python",
+      "args": ["-m", "tabula.mcp_server"],
+      "cwd": "/ABS/PATH/tabula-rasa"
+    }
+  }
+}

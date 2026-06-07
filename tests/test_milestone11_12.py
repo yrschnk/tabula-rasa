@@ -98,36 +98,81 @@ def test_superseded_facts_in_history():
 # ─── Веха 12: MCP-сервер ──────────────────────────────────────────────────────
 
 def test_mcp_tools_list():
-    """MCP-сервер регистрирует 4 инструмента."""
+    """MCP-сервер регистрирует инструменты."""
     import asyncio
     from tabula.mcp_server import list_tools
     tools = asyncio.run(list_tools())
     names = [t.name for t in tools]
-    assert "tabula_add" in names
-    assert "tabula_ask" in names
-    assert "tabula_search" in names
-    assert "tabula_status" in names
+    for expected in (
+        "tabula_add", "tabula_add_batch", "tabula_update", "tabula_forget",
+        "tabula_ask", "tabula_search", "tabula_sync", "tabula_status",
+    ):
+        assert expected in names
 
 
 def test_mcp_add_and_search():
     """tabula_add сохраняет факты, tabula_search их находит."""
     import asyncio
+    from tabula.mcp_server import call_tool
+
+    asyncio.run(call_tool("tabula_add", {
+        "content": "mcp тест факт про память",
+        "concept": "MCP",
+        "namespace": NS,
+    }))
+
+    result = asyncio.run(call_tool("tabula_search", {"query": "mcp", "namespace": NS}))
+    assert "mcp тест факт" in result[0].text
+    assert "id=" in result[0].text
+
+
+def test_mcp_add_batch_graph():
+    """tabula_add_batch строит несколько фактов и links."""
+    import asyncio
+    from tabula.graph import load_graph
+    from tabula.mcp_server import call_tool
+
+    asyncio.run(call_tool("tabula_add_batch", {
+        "namespace": NS,
+        "facts": [
+            {"content": "факт про ВНЖ batch", "concept": "ВНЖ"},
+            {"content": "факт про Испанию batch", "concept": "Испания"},
+        ],
+        "links": [["ВНЖ", "Испания"]],
+    }))
+    G = load_graph(NS)
+    assert G.number_of_edges() >= 1
+
+
+def test_mcp_update():
+    """tabula_update заменяет старый факт."""
+    import asyncio
     from unittest.mock import patch, MagicMock
+    from tabula.mcp_server import call_tool
+    from tabula.store import collect_facts
 
-    mock_backend = MagicMock()
-    mock_backend.complete_json.return_value = {
-        "facts": [{"content": "mcp тест факт", "concept": "MCP",
-                   "attributed_to": "user", "entities": [], "timestamp": None}],
-        "links": [],
-    }
+    mock_llm = MagicMock()
+    with patch("tabula.update.llm", return_value=mock_llm):
+        asyncio.run(call_tool("tabula_add", {
+            "content": "бюджет 1200",
+            "concept": "Финансы",
+            "namespace": NS,
+        }))
 
-    with patch("tabula.ingest.llm", return_value=mock_backend):
-        from tabula.mcp_server import call_tool
-        asyncio.run(call_tool("tabula_add", {"text": "mcp тест факт", "namespace": NS}))
+    search = asyncio.run(call_tool("tabula_search", {"query": "бюджет", "namespace": NS}))
+    prefix = search[0].text.split("id=")[1][:8]
 
-    from tabula.store import search_fts
-    results = search_fts("mcp", NS, k=5)
-    assert len(results) > 0
+    asyncio.run(call_tool("tabula_update", {
+        "target_fact_id": prefix,
+        "content": "бюджет 1500",
+        "concept": "Финансы",
+        "namespace": NS,
+    }))
+
+    facts = collect_facts(["Финансы"], NS)
+    active = [f for f in facts if f.status == "active"]
+    assert len(active) == 1
+    assert "1500" in active[0].content
 
 
 def test_mcp_status():
@@ -144,8 +189,9 @@ def test_mcp_status():
 def test_mcp_rubric_loaded():
     """Server instructions загружены из mcp_rubric.md."""
     from tabula.mcp_server import _INSTRUCTIONS
-    assert "tabula_add" in _INSTRUCTIONS
-    assert "tabula_ask" in _INSTRUCTIONS
+    assert "tabula_add_batch" in _INSTRUCTIONS
+    assert "A.U.D.N" in _INSTRUCTIONS
+    assert "tabula_update" in _INSTRUCTIONS
 
 
 def test_mcp_namespace_detection():

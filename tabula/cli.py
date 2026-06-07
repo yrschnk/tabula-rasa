@@ -83,6 +83,50 @@ def status(namespace: str = typer.Option("personal", "--ns")):
             typer.echo(f"    · {c['name']}")
 
 
+@app.command("connect")
+def connect_command(
+    client: str = typer.Argument(
+        ...,
+        help="cursor | claude | codex | all",
+    ),
+    global_cursor: bool = typer.Option(
+        False, "--global", help="Cursor: писать в ~/.cursor/mcp.json вместо проекта",
+    ),
+):
+    """Подключить MCP-сервер к Cursor / Claude Code / Codex."""
+    from tabula.connect import connect, connect_all, restart_hint
+
+    client = client.lower().strip()
+    if client == "all":
+        paths = connect_all(global_cursor=global_cursor)
+        typer.echo("✅ MCP tabula-rasa подключён:\n")
+        for name, path in paths.items():
+            typer.echo(f"  · {name}: {path}")
+            typer.echo(f"    → {restart_hint(name)}")  # type: ignore[arg-type]
+        return
+
+    if client not in ("cursor", "claude", "codex"):
+        typer.echo(f"❌ Неизвестный клиент: {client}. Используй: cursor, claude, codex, all")
+        raise typer.Exit(code=1)
+
+    path = connect(client, global_cursor=global_cursor)  # type: ignore[arg-type]
+    typer.echo(f"✅ MCP записан: {path}")
+    typer.echo(f"→ {restart_hint(client)}")  # type: ignore[arg-type]
+
+
+@app.command()
+def doctor(
+    skip_embed: bool = typer.Option(False, "--skip-embed", help="Не грузить embed-модель (~470MB)"),
+):
+    """Проверить установку перед connect."""
+    from tabula.doctor import format_report, run_doctor
+
+    report = run_doctor(skip_embed=skip_embed)
+    typer.echo(format_report(report))
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def bench(
     dataset: str = typer.Option("longmemeval-s", "--dataset", help="longmemeval-s | locomo"),

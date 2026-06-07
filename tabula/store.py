@@ -205,14 +205,19 @@ def collect_facts(concepts: list[str], namespace: str,
     return [_row_to_fact(r) for r in rows]
 
 
-def search_fts(query: str, namespace: str, k: int = 10) -> list[tuple[str, float]]:
-    """FTS5 поиск с OR по токенам. Возвращает [(concept, score)]."""
-    # Преобразуем "слово1 слово2" → "слово1 OR слово2" для мягкого поиска
+def _fts_query(query: str) -> str:
+    """Преобразовать запрос в FTS5 MATCH string."""
     tokens = query.strip().split()
     if len(tokens) > 1:
-        fts_query = " OR ".join(tokens)
-    else:
-        fts_query = query.strip()
+        return " OR ".join(tokens)
+    return query.strip()
+
+
+def search_fts(query: str, namespace: str, k: int = 10) -> list[tuple[str, float]]:
+    """FTS5 поиск с OR по токенам. Возвращает [(concept, score)]."""
+    fts_query = _fts_query(query)
+    if not fts_query:
+        return []
 
     try:
         with _conn(namespace) as con:
@@ -226,7 +231,27 @@ def search_fts(query: str, namespace: str, k: int = 10) -> list[tuple[str, float
             ).fetchall()
         return [(r["concept"], -r["rank"]) for r in rows]
     except Exception:
-        # Fallback: LIKE если FTS не сработал
+        return []
+
+
+def search_facts(query: str, namespace: str, k: int = 10) -> list[Fact]:
+    """FTS5 поиск активных фактов. Возвращает полные Fact с fact_id."""
+    fts_query = _fts_query(query)
+    if not fts_query:
+        return []
+
+    try:
+        with _conn(namespace) as con:
+            rows = con.execute(
+                """SELECT f.* FROM facts_fts fts
+                   JOIN facts f ON fts.fact_id = f.fact_id
+                   WHERE facts_fts MATCH ?
+                     AND f.status='active' AND f.valid_to IS NULL
+                   ORDER BY fts.rank LIMIT ?""",
+                (fts_query, k),
+            ).fetchall()
+        return [_row_to_fact(r) for r in rows]
+    except Exception:
         return []
 
 
