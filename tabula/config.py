@@ -21,7 +21,8 @@ class Config:
     wiki_dir: Path = ROOT / "wiki"
 
     # --- LLM backend: "mcp_sampling" (default) | "api" | "ollama" ---
-    backend: str = "mcp_sampling"
+    # Для личного тестирования: поставить "api" и добавить ANTHROPIC_API_KEY в .env
+    backend: str = os.getenv("TABULA_BACKEND", "mcp_sampling")
     extract_model: str = "claude-haiku"      # дешёвая модель для extract (api/ollama)
     reconstruct_model: str = "claude-sonnet" # сильная модель для ответа
     ollama_model: str = "qwen2.5"

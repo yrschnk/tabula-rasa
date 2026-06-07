@@ -1,33 +1,77 @@
 """MCP-сервер Tabula Rasa. SPEC 10.5.
 4 инструмента + server instructions (decision rubric).
-Дефолтный backend = MCP sampling (LLM-роль у хоста, без API-ключа).
+Дефолтный backend = MCP sampling: LLM-вызовы делегируются хост-агенту
+(Claude Code / Cursor) через session.create_message() — без API-ключа.
 
-Подключение к Claude Code / Cursor / Codex (добавить в mcp config):
-  {
-    "tabula-rasa": {
-      "command": "python",
-      "args": ["-m", "tabula.mcp_server"],
-      "cwd": "/path/to/tabula-rasa"
-    }
+Подключение (добавить в ~/.claude.json → mcpServers):
+  "tabula-rasa": {
+    "type": "stdio",
+    "command": "/path/to/.venv/bin/python",
+    "args": ["-m", "tabula.mcp_server"],
+    "cwd": "/path/to/tabula-rasa"
   }
 """
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
-
-# ─── Загрузка decision rubric ─────────────────────────────────────────────────
+from mcp.types import SamplingMessage, TextContent, Tool
 
 RUBRIC_PATH = Path(__file__).parent / "prompts" / "mcp_rubric.md"
+EXTRACT_PROMPT = Path(__file__).parent / "prompts" / "extract.md"
+RECONSTRUCT_PROMPT = Path(__file__).parent / "prompts" / "reconstruct.md"
 
 _INSTRUCTIONS = RUBRIC_PATH.read_text(encoding="utf-8") if RUBRIC_PATH.exists() else ""
 
-# ─── Авто-определение namespace по git-root ───────────────────────────────────
+app = Server("tabula-rasa", instructions=_INSTRUCTIONS)
+
+
+# ─── MCP Sampling helper ──────────────────────────────────────────────────────
+
+async def _sampling_complete(prompt: str, max_tokens: int = 4096) -> str:
+    """Делегировать LLM-вызов хост-агенту через MCP sampling.
+    Работает только внутри call_tool (request context).
+    """
+    session = app.request_context.session
+    result = await session.create_message(
+        messages=[SamplingMessage(
+            role="user",
+            content=TextContent(type="text", text=prompt),
+        )],
+        max_tokens=max_tokens,
+    )
+    # Результат может быть TextContent или list
+    content = result.content
+    if hasattr(content, "text"):
+        return content.text
+    if isinstance(content, list):
+        return "".join(c.text for c in content if hasattr(c, "text"))
+    return str(content)
+
+
+async def _sampling_complete_json(prompt: str, retries: int = 3) -> dict:
+    """sampling_complete с гарантированным JSON + ретраи."""
+    last_err = None
+    for attempt in range(retries):
+        raw = await _sampling_complete(prompt)
+        try:
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+            return json.loads(raw)
+        except (json.JSONDecodeError, AttributeError) as e:
+            last_err = e
+            if attempt < retries - 1:
+                prompt = prompt + "\n\nВАЖНО: верни ТОЛЬКО валидный JSON, без пояснений."
+    raise ValueError(f"Не удалось получить JSON за {retries} попыток: {last_err}")
+
+
+# ─── Namespace ────────────────────────────────────────────────────────────────
 
 def _detect_namespace(hint: str | None = None) -> str:
     if hint:
@@ -38,24 +82,18 @@ def _detect_namespace(hint: str | None = None) -> str:
             capture_output=True, text=True, timeout=2,
         )
         if result.returncode == 0:
-            repo = Path(result.stdout.strip()).name
-            return f"proj:{repo}"
+            return f"proj:{Path(result.stdout.strip()).name}"
     except Exception:
         pass
     return "personal"
 
-
-# ─── Инициализация ────────────────────────────────────────────────────────────
 
 def _init(namespace: str) -> None:
     from tabula.store import init_schema
     init_schema(namespace)
 
 
-# ─── MCP-сервер ───────────────────────────────────────────────────────────────
-
-app = Server("tabula-rasa", instructions=_INSTRUCTIONS)
-
+# ─── Tools ────────────────────────────────────────────────────────────────────
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
@@ -81,23 +119,23 @@ async def list_tools() -> list[Tool]:
             name="tabula_ask",
             description=(
                 "Спросить персональную память. Вызывай в начале темы и "
-                "когда пользователь спрашивает о прошлом ('что мы решали', 'что я говорил про X')."
+                "когда пользователь спрашивает о прошлом."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "question": {"type": "string", "description": "Вопрос к памяти"},
+                    "question": {"type": "string"},
                     "namespace": {"type": "string"},
                     "mode": {"type": "string", "enum": ["activation", "fts5"],
                              "default": "activation"},
-                    "as_of": {"type": "string", "description": "ISO дата для temporal вопросов"},
+                    "as_of": {"type": "string"},
                 },
                 "required": ["question"],
             },
         ),
         Tool(
             name="tabula_search",
-            description="Быстрый поиск фактов без LLM-реконструкции. Возвращает сырые факты.",
+            description="Быстрый поиск сырых фактов без LLM-реконструкции.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -110,12 +148,10 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="tabula_status",
-            description="Показать статус памяти: концепты, факты, размер графа.",
+            description="Статус памяти: концепты, факты, размер графа.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "namespace": {"type": "string"},
-                },
+                "properties": {"namespace": {"type": "string"}},
             },
         ),
     ]
@@ -134,40 +170,134 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return await _handle_search(arguments, ns)
     elif name == "tabula_status":
         return await _handle_status(ns)
-    else:
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
+
+# ─── Handlers ─────────────────────────────────────────────────────────────────
 
 async def _handle_add(args: dict, ns: str) -> list[TextContent]:
-    from tabula.ingest import ingest_session
-    from tabula.models import RawTurn
+    """ingest через MCP sampling: extract → store → graph."""
+    from tabula.concepts import canonicalize, get_concept_registry
+    from tabula.dedup import content_hash
+    from tabula.graph import update_edges_for_turn
+    from tabula.models import FactCandidate, RawTurn
+    from tabula.raw_store import write_raw
+    from tabula.store import find_by_hash
+    from tabula.update import apply_candidate
 
-    turn = RawTurn(
-        text=args["text"],
-        namespace=ns,
-        session_id=args.get("session_id", ""),
+    text = args["text"]
+
+    # Записать сырьё
+    turn = RawTurn(text=text, namespace=ns,
+                   session_id=args.get("session_id", ""))
+    write_raw(turn)
+
+    # Кэш — уже обработано?
+    from tabula.store import _conn
+    processed = set()
+    with _conn(ns) as con:
+        rows = con.execute(
+            "SELECT DISTINCT source_raw_id FROM facts WHERE namespace=? AND source_raw_id != ''",
+            (ns,),
+        ).fetchall()
+        processed = {r["source_raw_id"] for r in rows}
+    if turn.raw_id in processed:
+        return [TextContent(type="text", text="✅ Уже в памяти (дубликат).")]
+
+    # Extract через MCP sampling
+    registry = get_concept_registry(ns)
+    registry_str = ", ".join(registry) if registry else "(пока пусто)"
+
+    prompt = (
+        EXTRACT_PROMPT.read_text(encoding="utf-8")
+        .replace("{concept_registry}", registry_str)
+        .replace("{session_turns}", f"[user]: {text}")
     )
-    count = ingest_session([turn], namespace=ns)
+
+    try:
+        raw = await _sampling_complete_json(prompt)
+    except Exception as e:
+        # Fallback: записать как атомарный факт без LLM
+        c = FactCandidate(content=text, concept="General", attributed_to="user")
+        apply_candidate(c, ns, source_raw_id=turn.raw_id)
+        return [TextContent(type="text",
+                            text=f"✅ Записано (без extract: {e}).")]
+
+    # Применить факты
+    count = 0
+    all_concepts = []
+    for f in raw.get("facts", []):
+        content = f.get("content", "").strip()
+        if not content:
+            continue
+        canon = canonicalize(f.get("concept", "General"), ns)
+        c = FactCandidate(
+            content=content, concept=canon,
+            attributed_to=f.get("attributed_to", "user"),
+            entities=f.get("entities", []),
+            timestamp=f.get("timestamp"),
+        )
+        fid = apply_candidate(c, ns, source_raw_id=turn.raw_id)
+        if fid:
+            count += 1
+        all_concepts.append(canon)
+
+    # Обновить граф
+    links = [(a, b) for a, b in raw.get("links", [])]
+    if all_concepts:
+        update_edges_for_turn(all_concepts, links, ns)
+
     return [TextContent(type="text",
                         text=f"✅ Записано. Добавлено фактов: {count}")]
 
 
 async def _handle_ask(args: dict, ns: str) -> list[TextContent]:
-    from tabula.retrieval import query
+    """Retrieval через MCP sampling: activate → collect → reconstruct."""
+    from tabula.activation import activate
+    from tabula.config import CONFIG
+    from tabula.store import collect_facts
 
-    result = query(
-        args["question"],
-        namespace=ns,
-        as_of=args.get("as_of"),
-        mode=args.get("mode", "activation"),
+    question = args["question"]
+    mode = args.get("mode", "activation")
+    as_of = args.get("as_of")
+
+    # Поиск концептов
+    activated = activate(question, ns, mode=mode)
+    concepts = [c for c, _ in activated]
+    facts = collect_facts(concepts, ns, as_of=as_of)
+
+    # Abstention
+    max_act = activated[0][1] if activated else 0.0
+    if not facts or max_act < CONFIG.abstain_threshold:
+        return [TextContent(type="text", text="🤷 Информации об этом нет в памяти.")]
+
+    # Контекст
+    from tabula.retrieval import build_context
+    context = build_context(facts)
+
+    # Reconstruct через MCP sampling
+    prompt = (
+        RECONSTRUCT_PROMPT.read_text(encoding="utf-8")
+        .replace("{as_of}", as_of or "сейчас")
+        .replace("{question}", question)
+        .replace("{facts}", context)
     )
-    if result.abstained:
-        text = "🤷 Информации об этом нет в памяти."
-    else:
-        text = result.answer
-        if result.activated_nodes:
-            text += f"\n\n_Использованные концепты: {', '.join(result.activated_nodes[:5])}_"
 
+    try:
+        raw = await _sampling_complete_json(prompt)
+        answer = raw.get("answer", "")
+        confidence = float(raw.get("confidence", 0.0))
+    except Exception:
+        # Fallback: вернуть сырые факты
+        answer = "\n".join(f"- {f.content}" for f in facts[:5])
+        confidence = 0.5
+
+    if not answer or confidence == 0:
+        return [TextContent(type="text", text="🤷 Информации об этом нет в памяти.")]
+
+    text = answer
+    if concepts:
+        text += f"\n\n_Концепты: {', '.join(concepts[:5])}_"
     return [TextContent(type="text", text=text)]
 
 
