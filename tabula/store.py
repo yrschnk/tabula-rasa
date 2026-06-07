@@ -78,7 +78,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
     fact_id UNINDEXED,
     content,
     concept,
-    tokenize='porter ascii'
+    tokenize='unicode61'
 );
 """
 
@@ -201,17 +201,28 @@ def collect_facts(concepts: list[str], namespace: str,
 
 
 def search_fts(query: str, namespace: str, k: int = 10) -> list[tuple[str, float]]:
-    """FTS5 поиск. Возвращает [(concept, score)]."""
-    with _conn(namespace) as con:
-        rows = con.execute(
-            """SELECT f.concept, fts.rank
-               FROM facts_fts fts
-               JOIN facts f ON fts.fact_id = f.fact_id
-               WHERE facts_fts MATCH ?
-               ORDER BY fts.rank LIMIT ?""",
-            (query, k),
-        ).fetchall()
-    return [(r["concept"], -r["rank"]) for r in rows]
+    """FTS5 поиск с OR по токенам. Возвращает [(concept, score)]."""
+    # Преобразуем "слово1 слово2" → "слово1 OR слово2" для мягкого поиска
+    tokens = query.strip().split()
+    if len(tokens) > 1:
+        fts_query = " OR ".join(tokens)
+    else:
+        fts_query = query.strip()
+
+    try:
+        with _conn(namespace) as con:
+            rows = con.execute(
+                """SELECT f.concept, fts.rank
+                   FROM facts_fts fts
+                   JOIN facts f ON fts.fact_id = f.fact_id
+                   WHERE facts_fts MATCH ?
+                   ORDER BY fts.rank LIMIT ?""",
+                (fts_query, k),
+            ).fetchall()
+        return [(r["concept"], -r["rank"]) for r in rows]
+    except Exception:
+        # Fallback: LIKE если FTS не сработал
+        return []
 
 
 # ─── edges ────────────────────────────────────────────────────────────────────
