@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tabula.config import CONFIG
 from tabula.dedup import content_hash
+from tabula.llm import llm
 from tabula.models import Fact, FactCandidate, Op
 from tabula.store import (
     add_fact, archive, collect_facts, find_by_hash, reinforce, supersede,
@@ -53,15 +54,36 @@ def find_similar(candidate: FactCandidate, namespace: str,
 
 def resolve_operation(candidate: FactCandidate,
                       similar: list[Fact]) -> tuple[Op, str | None]:
-    """LLM A.U.D.N. SPEC 5.4, Промпт: prompts/audn.md.
-    Веха 2: если нет похожих → ADD. LLM вызов включается в вехе 6.
-    """
+    """LLM A.U.D.N через prompts/audn.md. SPEC 5.4."""
     if not similar:
         return "ADD", None
 
-    # Веха 6: здесь будет LLM-вызов для UPDATE/DELETE/NOOP
-    # Пока — простая эвристика: нет похожих → ADD
-    return "ADD", None
+    similar_str = "\n".join(
+        f"- id={f.fact_id[:8]} ts={f.timestamp or f.valid_from[:10]} "
+        f"attr={f.attributed_to}: {f.content}"
+        for f in similar
+    )
+    template = AUDN_PROMPT_PATH.read_text(encoding="utf-8")
+    prompt = (
+        template
+        .replace("{candidate}", candidate.content)
+        .replace("{similar_list_with_ids_and_timestamps}", similar_str)
+    )
+    try:
+        raw = llm().complete_json(prompt, model_hint="extract")
+        op_str = raw.get("op", "ADD").upper()
+        target = raw.get("target_fact_id")
+        # Найти полный fact_id по префиксу
+        if target and len(target) == 8:
+            for f in similar:
+                if f.fact_id.startswith(target):
+                    target = f.fact_id
+                    break
+        valid_ops = {"ADD", "UPDATE", "DELETE", "NOOP"}
+        op: Op = op_str if op_str in valid_ops else "ADD"  # type: ignore
+        return op, target
+    except Exception:
+        return "ADD", None
 
 
 def apply_candidate(candidate: FactCandidate, namespace: str,
