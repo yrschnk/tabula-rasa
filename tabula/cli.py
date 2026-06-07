@@ -82,5 +82,29 @@ def status(namespace: str = typer.Option("personal", "--ns")):
             typer.echo(f"    · {c['name']}")
 
 
+@app.command()
+def bench(
+    dataset: str = typer.Option("longmemeval-s", "--dataset", help="longmemeval-s | locomo"),
+    mode: str = typer.Option("activation", "--mode", help="fts5 | activation"),
+    judge: str = typer.Option("claude", "--judge", help="claude | gpt-4o"),
+    sample: Optional[int] = typer.Option(None, "--sample", help="Число вопросов (50 для dev)"),
+    compare: Optional[str] = typer.Option(None, "--compare",
+                                           help="Сравнить режимы: fts5,activation"),
+    dataset_path: Optional[str] = typer.Option(None, "--path", help="Путь к файлу датасета"),
+):
+    """Прогнать бенчмарк или сравнить режимы."""
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
+    from bench.runner import run, compare as do_compare
+
+    if compare:
+        modes = [m.strip() for m in compare.split(",")]
+        do_compare(dataset=dataset, dataset_path=dataset_path,
+                   modes=modes, sample=sample)
+    else:
+        run(dataset=dataset, dataset_path=dataset_path,
+            mode=mode, judge_name=judge, sample=sample)
+
+
 if __name__ == "__main__":
     app()
