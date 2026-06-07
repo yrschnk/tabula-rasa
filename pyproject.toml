@@ -1,0 +1,29 @@
+[project]
+name = "tabula-rasa"
+version = "0.1.0"
+description = "Tabula Rasa — персональная когнитивная память (второй мозг) для агентов и человека"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "anthropic>=0.40",
+    "openai>=1.50",
+    "fastembed>=0.4",
+    "sqlite-vec>=0.1.6",
+    "networkx>=3.3",
+    "mcp>=1.0",
+    "python-dotenv>=1.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+tabula = "tabula.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100

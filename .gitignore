@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
+.env
+
+# Data (локальные, не коммитим)
+db/*.db
+raw/**/*.json
+wiki/**/*.md
+bench/results/*.json
+bench/datasets/data/
+
+# Models cache (fastembed)
+.fastembed_cache/
+*.onnx
+
+# OS
+.DS_Store
