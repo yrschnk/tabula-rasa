@@ -19,14 +19,35 @@ AUDN_PROMPT_PATH = Path(__file__).parent / "prompts" / "audn.md"
 
 def find_similar(candidate: FactCandidate, namespace: str,
                  k: int | None = None) -> list[Fact]:
-    """Поиск похожих фактов.
-    Веха 2: concept-scoped (все активные факты того же концепта).
-    Веха 5: заменить/дополнить векторным поиском.
-    """
+    """Поиск похожих фактов через векторы + concept-scoped fallback. SPEC 5.4."""
     k = k or CONFIG.similar_k
-    facts = collect_facts([candidate.concept], namespace)
-    # Исключаем точный дубль (уже обработан hash-дедупом)
     ch = content_hash(candidate.content)
+
+    # Пробуем векторный поиск (веха 5)
+    try:
+        from tabula.embeddings import embed_one
+        from tabula.store import get_fact, vector_knn
+        q_vec = embed_one(candidate.content)
+        knn = vector_knn(q_vec, namespace, k=k * 2)
+        if knn:
+            facts = []
+            seen = set()
+            for fid, dist in knn:
+                if fid in seen:
+                    continue
+                seen.add(fid)
+                f = get_fact(fid, namespace)
+                if f and f.status == "active" and f.content_hash != ch:
+                    facts.append(f)
+                if len(facts) >= k:
+                    break
+            if facts:
+                return facts
+    except Exception:
+        pass
+
+    # Fallback: concept-scoped
+    facts = collect_facts([candidate.concept], namespace)
     return [f for f in facts if f.content_hash != ch][:k]
 
 
@@ -48,6 +69,9 @@ def apply_candidate(candidate: FactCandidate, namespace: str,
     """Полный пайплайн: hash-дедуп → similar → resolve → применить.
     Возвращает fact_id нового факта или None если NOOP/reinforce.
     """
+    from tabula.store import init_schema
+    init_schema(namespace)  # идемпотентно
+
     # 1. Точный дубль — reinforce
     ch = content_hash(candidate.content)
     existing = find_by_hash(ch, namespace)
@@ -63,11 +87,15 @@ def apply_candidate(candidate: FactCandidate, namespace: str,
 
     # 4. Применение
     if op == "ADD":
-        return add_fact(candidate, namespace, source_raw_id=source_raw_id)
+        fid = add_fact(candidate, namespace, source_raw_id=source_raw_id)
+        _index_embedding(fid, candidate.content, namespace)
+        return fid
 
     elif op == "UPDATE" and target_id:
         supersede(target_id, namespace)
-        return add_fact(candidate, namespace)
+        fid = add_fact(candidate, namespace, source_raw_id=source_raw_id)
+        _index_embedding(fid, candidate.content, namespace)
+        return fid
 
     elif op == "DELETE" and target_id:
         archive(target_id, namespace)
@@ -78,4 +106,17 @@ def apply_candidate(candidate: FactCandidate, namespace: str,
         return None
 
     # fallback
-    return add_fact(candidate, namespace)
+    fid = add_fact(candidate, namespace, source_raw_id=source_raw_id)
+    _index_embedding(fid, candidate.content, namespace)
+    return fid
+
+
+def _index_embedding(fact_id: str, content: str, namespace: str) -> None:
+    """Вычислить и сохранить эмбеддинг факта (тихо, не блокирует при ошибке)."""
+    try:
+        from tabula.embeddings import embed_one
+        from tabula.store import upsert_vec
+        vec = embed_one(content)
+        upsert_vec(fact_id, vec, namespace)
+    except Exception:
+        pass  # Векторы опциональны — не ломаем основной поток

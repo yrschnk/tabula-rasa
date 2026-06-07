@@ -29,7 +29,30 @@ def canonicalize(name: str, namespace: str) -> str:
             if alias.lower() == normalized.lower():
                 return c["name"]
 
-    # 3. Не нашли — создаём новый концепт
+    # 3. Embedding-сходство (если есть векторы)
+    try:
+        from tabula.embeddings import cosine_similarity, embed_one
+        from tabula.config import CONFIG
+        new_vec = embed_one(normalized)
+        for c in concepts:
+            if c["embedding"] is not None:
+                import struct
+                stored = c["embedding"]
+                dim = len(stored) // 4
+                old_vec = list(struct.unpack(f"{dim}f", stored))
+                if cosine_similarity(new_vec, old_vec) >= CONFIG.concept_sim_threshold:
+                    # Нашли близкий — добавляем алиас
+                    aliases = c["aliases"] + [normalized]
+                    upsert_concept(c["name"], namespace, aliases=aliases)
+                    return c["name"]
+        # Новый концепт с эмбеддингом
+        vec_bytes = struct.pack(f"{len(new_vec)}f", *new_vec)
+        upsert_concept(normalized, namespace, embedding=vec_bytes)
+        return normalized
+    except Exception:
+        pass
+
+    # 4. Fallback: создаём без эмбеддинга
     upsert_concept(normalized, namespace)
     return normalized
 

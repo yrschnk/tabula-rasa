@@ -13,8 +13,44 @@ def fts_search(query: str, namespace: str,
 
 def vector_search(query: str, namespace: str,
                   k: int | None = None) -> list[tuple[str, float]]:
-    """Векторный поиск (sqlite-vec). Реализуется в вехе 5."""
-    raise NotImplementedError("vector_search реализуется в вехе 5")
+    """Векторный поиск через sqlite-vec. SPEC 5.8.
+    Возвращает [(concept, score)] отсортировано по убыванию score.
+    """
+    from tabula.embeddings import embed_one
+    from tabula.store import vector_knn
+    import sqlite3
+
+    k = k or CONFIG.top_seed
+    try:
+        q_vec = embed_one(query)
+        knn = vector_knn(q_vec, namespace, k=k)
+    except Exception:
+        return []
+
+    if not knn:
+        return []
+
+    # Получаем concept для каждого fact_id
+    from tabula.store import _conn
+    fact_ids = [fid for fid, _ in knn]
+    dist_map = {fid: d for fid, d in knn}
+
+    ph = ",".join("?" * len(fact_ids))
+    with _conn(namespace) as con:
+        rows = con.execute(
+            f"SELECT fact_id, concept FROM facts WHERE fact_id IN ({ph})",
+            fact_ids,
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        fid = row["fact_id"]
+        concept = row["concept"]
+        d = dist_map.get(fid, 1.0)
+        score = 1.0 / (1.0 + d)
+        results.append((concept, score))
+
+    return sorted(results, key=lambda x: x[1], reverse=True)
 
 
 def rrf_fuse(*result_lists: list[tuple[str, float]],

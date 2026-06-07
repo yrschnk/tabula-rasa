@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS concepts (
     PRIMARY KEY (namespace, name)
 );
 
+CREATE TABLE IF NOT EXISTS store_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
     fact_id UNINDEXED,
     content,
@@ -276,6 +281,83 @@ def get_all_concepts(namespace: str) -> list[dict]:
     return [{"name": r["name"],
              "aliases": json.loads(r["aliases"]),
              "embedding": r["embedding"]} for r in rows]
+
+
+# ─── vector index (sqlite-vec) ────────────────────────────────────────────────
+
+def _ensure_vec_table(namespace: str, dim: int) -> None:
+    """Создать facts_vec если не существует (или если размерность изменилась)."""
+    import sqlite_vec
+    with _conn(namespace) as con:
+        con.enable_load_extension(True)
+        sqlite_vec.load(con)
+        con.enable_load_extension(False)
+        # Проверяем сохранённую размерность
+        meta = con.execute(
+            "SELECT value FROM store_meta WHERE key='vec_dim'"
+        ).fetchone()
+        if meta and int(meta["value"]) != dim:
+            # Размерность сменилась → дроп и пересоздание
+            con.execute("DROP TABLE IF EXISTS facts_vec")
+        con.executescript(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec
+            USING vec0(fact_id TEXT PRIMARY KEY, embedding float[{dim}]);
+        """)
+        con.execute(
+            "INSERT OR REPLACE INTO store_meta(key,value) VALUES('vec_dim',?)",
+            (str(dim),),
+        )
+
+
+def upsert_vec(fact_id: str, embedding: list[float], namespace: str) -> None:
+    """Сохранить/обновить эмбеддинг факта."""
+    import struct, sqlite_vec
+    dim = len(embedding)
+    _ensure_vec_table(namespace, dim)
+    blob = struct.pack(f"{dim}f", *embedding)
+    with _conn(namespace) as con:
+        con.enable_load_extension(True)
+        sqlite_vec.load(con)
+        con.enable_load_extension(False)
+        con.execute(
+            "INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES(?,?)",
+            (fact_id, blob),
+        )
+
+
+def vector_knn(query_vec: list[float], namespace: str,
+               k: int = 10) -> list[tuple[str, float]]:
+    """KNN поиск в facts_vec. Возвращает [(fact_id, distance)]."""
+    import struct, sqlite_vec
+    dim = len(query_vec)
+    _ensure_vec_table(namespace, dim)
+    blob = struct.pack(f"{dim}f", *query_vec)
+    with _conn(namespace) as con:
+        con.enable_load_extension(True)
+        sqlite_vec.load(con)
+        con.enable_load_extension(False)
+        rows = con.execute(
+            """SELECT fact_id, distance FROM facts_vec
+               WHERE embedding MATCH ? AND k=?
+               ORDER BY distance""",
+            (blob, k),
+        ).fetchall()
+    return [(r["fact_id"], r["distance"]) for r in rows]
+
+
+def fact_ids_to_concepts(fact_ids: list[str], namespace: str) -> list[tuple[str, float]]:
+    """Конвертировать fact_id → concept для vector результатов."""
+    if not fact_ids:
+        return []
+    ph = ",".join("?" * len(fact_ids))
+    with _conn(namespace) as con:
+        rows = con.execute(
+            f"SELECT fact_id, concept FROM facts WHERE fact_id IN ({ph})",
+            fact_ids,
+        ).fetchall()
+    id_to_concept = {r["fact_id"]: r["concept"] for r in rows}
+    return [(id_to_concept[fid], score) for fid, score in
+            [(fid, 0.0) for fid in fact_ids] if fid in id_to_concept]
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────

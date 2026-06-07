@@ -16,7 +16,18 @@ def activate(question: str, namespace: str,
     mode='activation' → FTS5 seeds + spreading по графу
     Возвращает [(concept, activation_score)], отсортировано по убыванию.
     """
-    seeds = fts_search(question, namespace, k=CONFIG.top_seed)
+    # Seeds: RRF(FTS5 + vector) или только FTS5 если векторов нет
+    fts_results = fts_search(question, namespace, k=CONFIG.top_seed)
+    try:
+        from tabula.search import vector_search, rrf_fuse
+        vec_results = vector_search(question, namespace, k=CONFIG.top_seed)
+        if vec_results:
+            seeds = rrf_fuse(fts_results, vec_results)[:CONFIG.top_seed]
+        else:
+            seeds = fts_results
+    except Exception:
+        seeds = fts_results
+
     if not seeds:
         return []
 
